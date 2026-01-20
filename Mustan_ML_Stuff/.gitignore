@@ -48,16 +48,16 @@ venv.bak/
 # 3. Download script in README
 
 # Ignore ALL model files (too large for GitHub)
-# *.pth
+*.pth
 # *.pt
-# *.onnx
-# *.pb
-# *.h5
-# *.pkl
-# *.pickle
-# *.joblib
-# *.model
-# *.weights
+*.onnx
+*.pb
+*.h5
+*.pkl
+*.pickle
+*.joblib
+*.model
+*.weights
 
 # Ignore model directories
 checkpoints/

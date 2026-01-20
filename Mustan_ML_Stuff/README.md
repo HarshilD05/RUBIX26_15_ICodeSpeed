@@ -4,223 +4,58 @@ Eye gaze detection and risk analysis using YOLOv8 pose estimation.
 
 ## Overview
 
-This project implements real-time eye gaze tracking and risk assessment using a custom-trained YOLOv8-pose model. The model detects eyes and tracks 3 keypoints per eye to analyze gaze direction and identify potentially risky behavior (looking away from screen).
+This project implements real-time eye gaze tracking and risk assessment. It uses a custom-trained **YOLOv8-pose** model (`best.pt`) to find eye keypoints and a geometric algorithm to calculate gaze direction.
 
-### Model Architecture
+### Key Features
+- **Real-time Detection**: Uses a 2-stage pipeline (MediaPipe/Fallback + YOLOv8) for high performance.
+- **Risk Analysis**: Detects if a user is looking down, up, sideways, or focusing on the screen.
+- **Optimized**: Threaded camera capture and optimized inference sizes for CPU performance.
 
-- **Model Type**: YOLOv8n-pose (Pose Estimation)
-- **Input**: 640x640 RGB images
-- **Output**: Eye detection with 3 keypoints per eye
-  1. **Inner corner** (caruncle)
-  2. **Outer corner** (interior margin)
-  3. **Pupil center** (iris center)
+## Pipeline Structure
 
-### Training Data
+The core logic is contained in the `eye_pipeline/` directory:
 
-The model was trained on eye gaze detection dataset with:
-- **Data Format**: JSON files containing eye landmark coordinates
-- **Keypoint Extraction**:
-  - Inner corner: `caruncle_2d[0]`
-  - Outer corner: `interior_margin_2d[8]`
-  - Pupil: Average of all `iris_2d` points
-- **Training Config**: `kpt_shape: [3, 3]` (3 keypoints × 3 values each)
+- **`main.py`**: Entry point. initializes and runs the pipeline.
+- **`modules/`**:
+  - **`pipeline.py`**: Orchestrates camera, detection, and display.
+  - **`eye_detector.py`**: The core detection logic (MediaPipe Stage 1 -> YOLO Stage 2).
+  - **`camera_input.py`**: Threaded camera handling.
+  - **`config.py`**: Configuration settings (Resolution, Sensitivity, Model paths).
+  - **`display.py`**: Visualization utilities.
 
-## Projects
+## Setup & Installation
 
-### 1. Eye Movement Detection Pipeline (Primary)
-Real-time eye detection with gaze-based risk analysis using geometric calculations.
-- 📁 Location: `eye_pipeline/`
-- 📖 [View Documentation](eye_pipeline/README.md)
-- ⚙️ Uses: `best.pt` model with keypoint detection
+1.  **Install Dependencies**
+    ```bash
+    pip install -r requirements_yolo.txt
+    ```
 
-**Risk Analysis Categories**:
-- `CENTER (SAFE)` - User focused on screen
-- `LOOKING DOWN (RISK)` - Looking at phone/notes
-- `LOOKING UP (THINKING)` - Looking up (acceptable)
-- `LOOKING SIDE (RISK)` - Looking left/right significantly
+2.  **Verify Model**
+    Ensure `best.pt` is present in `eye_pipeline/best.pt`.
+    *(This model is now included in the repository)*.
 
-### 2. Standalone Risk Analysis Script
-Simple webcam script for testing the risk calculation logic.
-- 📁 Location: `script.py`
-- 📖 Based on: Training notebook logic
+## Usage
 
-## Quick Start
+To run the eye gaze detection:
 
 ```bash
-# Install dependencies
-pip install -r requirements_yolo.txt
-
-# Run eye movement detection
 cd eye_pipeline
 python main.py
-
-# Inspect a model
-python test_pretrained_model.py
-
-# Run eye tracking
-python eye_detection_tracking.py
 ```
 
-## Sharing Models with Collaborators
+## Risk Classification
+The system classifies gaze into the following categories:
 
-Models are ignored by default in `.gitignore` to prevent large files in git. Here are three ways to share models:
+*   **CENTER (SAFE)**: User is looking at the screen.
+*   **LOOKING DOWN (RISK)**: User is looking down (e.g., at notes/phone).
+*   **LOOKING SIDE (RISK)**: User is looking too far left or right.
+*   **LOOKING UP (THINKING)**: User is looking up (generally considered safe/thinking behavior).
 
-### Option 1: Whitelist Specific Models (Small Models < 100MB)
+## Configuration
+You can adjust sensitivity and performance settings in `eye_pipeline/modules/config.py`:
+*   `CAMERA_WIDTH` / `CAMERA_HEIGHT`: Adjust resolution (Default: 640x480).
+*   `FRAME_SKIP`: Increase to reduce CPU load.
+*   `RISK_VERTICAL_THRESHOLD`: Sensitivity for looking down.
 
-Edit `.gitignore` and uncomment specific models:
-```gitignore
-# Whitelist your model
-!pretrainedModel.pth
-!eye_movement_model.pth
-!models/baseline_model.pth
-```
-
-Then commit normally:
-```bash
-git add pretrainedModel.pth
-git commit -m "Add pretrained model"
-git push
-```
-
-### Option 2: Git LFS (Recommended for Large Models)
-
-Git Large File Storage handles large files efficiently:
-
-```bash
-# One-time setup
-git lfs install
-
-# Track model files
-git lfs track "*.pth"
-git lfs track "*.pt"
-
-# Commit the tracking file
-git add .gitattributes
-git commit -m "Configure Git LFS"
-
-# Add and commit models
-git add models/
-git commit -m "Add models via Git LFS"
-git push
-```
-
-**Collaborators clone with:**
-```bash
-git lfs install
-git clone <repository-url>
-```
-
-### Option 3: External Storage (Best for Very Large Models > 1GB)
-
-Host models externally and provide download links:
-
-**Popular Options:**
-- 🔗 **Google Drive**: Public sharing link
-- ☁️ **AWS S3**: Cloud storage with wget/curl
-- 🤗 **HuggingFace Hub**: ML model hosting
-- 📦 **GitHub Releases**: Attach to releases
-- 🗄️ **Dropbox/OneDrive**: Shared folders
-
-**Example: Create a download script**
-
-Create `download_models.sh`:
-```bash
-#!/bin/bash
-# Download pretrained model
-wget -O pretrainedModel.pth "https://drive.google.com/uc?export=download&id=YOUR_FILE_ID"
-echo "Model downloaded successfully!"
-```
-
-Or Python script `download_models.py`:
-```python
-import requests
-import os
-
-def download_model(url, filename):
-    """Download model from URL"""
-    print(f"Downloading {filename}...")
-    response = requests.get(url, stream=True)
-    with open(filename, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
-    print(f"✓ {filename} downloaded!")
-
-if __name__ == "__main__":
-    # Add your model URLs
-    models = {
-        "pretrainedModel.pth": "YOUR_DOWNLOAD_URL",
-        "eye_movement_model.pth": "YOUR_DOWNLOAD_URL"
-    }
-    
-    for filename, url in models.items():
-        if not os.path.exists(filename):
-            download_model(url, filename)
-        else:
-            print(f"✓ {filename} already exists")
-```
-
-Then in your README, tell collaborators:
-```bash
-# Download models before running
-python download_models.py
-```
-
-## Recommended Approach
-
-| Model Size | Recommended Method | Why |
-|-----------|-------------------|-----|
-| < 10MB | Whitelist in git | Simple, no extra setup |
-| 10MB - 100MB | Git LFS | Good balance, version controlled |
-| > 100MB | External Storage | Faster clones, no size limits |
-
-## Project Structure
-
-```
-Mustan_ML_Stuff/
-├── README.md                        # This file
-├── requirements_yolo.txt            # Dependencies
-├── .gitignore                       # Git ignore rules
-│
-├── eye_pipeline/                    # Eye movement detection
-│   ├── main.py
-│   ├── README.md
-│   └── modules/
-│
-├── eye_detection_tracking.py        # YOLOv8 eye tracking
-├── eye_dataset_guide.md
-│
-├── model_inspector.py               # Model analysis tool
-├── test_pretrained_model.py
-├── README_model_inspector.md
-│
-├── example.py                       # Example scripts
-└── fastapi.py
-```
-
-## Dependencies
-
-All projects use the same dependencies:
-
-```bash
-pip install -r requirements_yolo.txt
-```
-
-Key packages:
-- `ultralytics` - YOLOv8
-- `torch` - PyTorch
-- `opencv-python` - Computer vision
-- `numpy` - Numerical computing
-- `pillow` - Image processing
-
-## Contributing
-
-When contributing models or datasets:
-
-1. **Small files (< 10MB)**: Commit directly
-2. **Large files (> 10MB)**: Use Git LFS or external storage
-3. **Datasets**: Always use external storage or DVC
-4. **Update documentation**: Keep READMEs current
-
-## License
-
-Part of the RUBIX26_15_ICodeSpeed repository.
+## Model Documentation
+For detailed technical specifications of the `best.pt` model, see [MODEL_DOCUMENTATION.md](MODEL_DOCUMENTATION.md).
