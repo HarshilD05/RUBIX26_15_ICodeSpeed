@@ -34,3 +34,6 @@ logs/
 
 # Test
 test.py
+
+# Builds
+**/Build/
