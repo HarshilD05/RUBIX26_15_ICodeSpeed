@@ -202,7 +202,22 @@ export const useProctoring = () => {
     // Listen for parsed alerts
     window.electron.receive('proctoring:alert', (alert) => {
       console.log('[Proctoring Alert]:', alert);
-      // Alerts are logged but not shown as notifications
+      
+      // Display notification immediately when alert is received
+      // The alert already contains the fixed message and category
+      if (notify && alert) {
+        const { severity, message, category } = alert;
+        
+        // Map severity to notification type
+        const notificationType = severity === 'critical' ? 'error' : 'warning';
+        
+        // Display notification
+        if (notificationType === 'error') {
+          notify.error(message, 5000, category); // Critical alerts stay longer (5s)
+        } else {
+          notify.warning(message, 3000, category); // Warning alerts (3s)
+        }
+      }
     });
 
     // Listen for notifications and display them

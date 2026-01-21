@@ -8,6 +8,7 @@ const fs = require('fs');
 const { app } = require('electron');
 const processManager = require('./processManager');
 const logWatcher = require('./logWatcher');
+const alertStateWatcher = require('./alertStateWatcher');
 
 class CameraMonitorSpawner {
   constructor() {
@@ -34,14 +35,14 @@ class CameraMonitorSpawner {
     
     this.scriptPath = config.scriptPath || path.join(
       appRoot,
-      'HD_ML_stuff',
+      'Mustan_ML_stuff',
       'proctor_main_background.py'
     );
 
     // Participant data path
     this.participantImagePath = config.participantImagePath || path.join(
       appRoot,
-      'HD_ML_stuff',
+      'Mustan_ML_stuff',
       'data',
       'participant.png'
     );
@@ -57,39 +58,87 @@ class CameraMonitorSpawner {
   /**
    * Find Python executable path
    * Looks for venv, conda, or system Python
+   * Supports Windows, macOS, and Linux
    */
   findPythonPath() {
     const appRoot = app.isPackaged 
       ? path.dirname(app.getPath('exe'))
       : path.join(__dirname, '../../../..');
 
-    // Check for virtual environment
-    const venvPath = path.join(appRoot, 'HD_ML_stuff', '.venv', 'Scripts', 'python.exe');
-    if (fs.existsSync(venvPath)) {
-      return venvPath;
+    const platform = process.platform;
+    const pythonExeName = platform === 'win32' ? 'python.exe' : 'python';
+    const venvBinDir = platform === 'win32' ? 'Scripts' : 'bin';
+
+    // Priority order for finding Python:
+    // 1. Virtual environment in HD_ML_stuff/.venv
+    // 2. Virtual environment in HD_ML_stuff/venv
+    // 3. Conda environment (if CONDA_PREFIX is set)
+    // 4. System Python
+
+    // Check for .venv (common convention)
+    const venvPath1 = path.join(appRoot, 'HD_ML_stuff', '.venv', venvBinDir, pythonExeName);
+    if (fs.existsSync(venvPath1)) {
+      console.log(`[CameraMonitor] Found venv Python: ${venvPath1}`);
+      return venvPath1;
+    }
+
+    // Check for venv (without dot)
+    const venvPath2 = path.join(appRoot, 'HD_ML_stuff', 'venv', venvBinDir, pythonExeName);
+    if (fs.existsSync(venvPath2)) {
+      console.log(`[CameraMonitor] Found venv Python: ${venvPath2}`);
+      return venvPath2;
+    }
+
+    // Check for conda environment
+    if (process.env.CONDA_PREFIX) {
+      const condaPath = path.join(process.env.CONDA_PREFIX, venvBinDir, pythonExeName);
+      if (fs.existsSync(condaPath)) {
+        console.log(`[CameraMonitor] Found conda Python: ${condaPath}`);
+        return condaPath;
+      }
+    }
+
+    // Check for env folder (another common name)
+    const envPath = path.join(appRoot, 'HD_ML_stuff', 'env', venvBinDir, pythonExeName);
+    if (fs.existsSync(envPath)) {
+      console.log(`[CameraMonitor] Found env Python: ${envPath}`);
+      return envPath;
     }
 
     // Fallback to system Python
-    return 'python';
+    console.log('[CameraMonitor] Using system Python');
+    return pythonExeName;
   }
 
   /**
    * Validate that required paths exist
    */
   validatePaths() {
+    const pythonExeName = process.platform === 'win32' ? 'python.exe' : 'python';
+    
     const checks = {
-      pythonExists: fs.existsSync(this.pythonPath) || this.pythonPath === 'python',
+      pythonExists: fs.existsSync(this.pythonPath) || this.pythonPath === pythonExeName,
       scriptExists: fs.existsSync(this.scriptPath),
       participantImageExists: fs.existsSync(this.participantImagePath)
     };
+
+    if (!checks.pythonExists && this.pythonPath !== pythonExeName) {
+      console.error(`[CameraMonitor] Python executable not found: ${this.pythonPath}`);
+    }
 
     if (!checks.scriptExists) {
       console.error(`[CameraMonitor] Proctoring script not found: ${this.scriptPath}`);
     }
 
+    if (!checks.participantImageExists) {
+      console.warn(`[CameraMonitor] Participant image not found: ${this.participantImagePath}`);
+      console.warn(`[CameraMonitor] Face matching will be disabled`);
+    }
+
     return {
-      success: checks.scriptExists,
-      checks
+      success: checks.scriptExists && (checks.pythonExists || this.pythonPath === pythonExeName),
+      checks,
+      warnings: !checks.participantImageExists ? ['Participant image not found'] : []
     };
   }
 
@@ -169,25 +218,35 @@ class CameraMonitorSpawner {
       
       console.log(`[CameraMonitor] Started monitoring - Process ID: ${result.processId}, PID: ${result.pid}`);
       
-      // Start watching log files
+      // Start watching alert state file
       const logDir = this.getLogDirectory();
-      if (logDir && options.watchLogs !== false) {
-        // Give the process a moment to create the log file
+      if (logDir && options.watchAlerts !== false) {
+        // Give the process a moment to create the alert state file
         setTimeout(() => {
-          logWatcher.watchSession(this.sessionId, path.dirname(logDir));
+          const alertStateFile = path.join(logDir, 'alert_state.txt');
+          alertStateWatcher.startWatching(alertStateFile, { pollInterval: 200 });
           
-          // Forward log events to the callback if provided
+          // Forward alert events to the callback if provided
           if (options.onLogAlert) {
-            logWatcher.on('alert', ({ alert }) => {
+            alertStateWatcher.on('alert', (alert) => {
               options.onLogAlert(alert);
             });
           }
           
           if (options.onLogNotification) {
-            logWatcher.on('notification', ({ notification }) => {
+            alertStateWatcher.on('notification', (notification) => {
               options.onLogNotification(notification);
             });
           }
+
+          console.log(`[CameraMonitor] Watching alert state file: ${alertStateFile}`);
+        }, 1000);
+      }
+
+      // Optionally still watch log files for historical data
+      if (logDir && options.watchLogs === true) {
+        setTimeout(() => {
+          logWatcher.watchSession(this.sessionId, path.dirname(logDir));
         }, 1000);
       }
       
@@ -222,7 +281,10 @@ class CameraMonitorSpawner {
 
     console.log(`[CameraMonitor] Stopping monitoring process ${this.monitorProcessId}`);
     
-    // Stop watching logs
+    // Stop watching alert state file
+    alertStateWatcher.stopWatching();
+    
+    // Stop watching logs if enabled
     const logDir = this.getLogDirectory();
     if (logDir && this.sessionId) {
       logWatcher.stopWatchingSession(this.sessionId, path.dirname(logDir));

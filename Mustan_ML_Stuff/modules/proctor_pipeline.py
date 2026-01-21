@@ -9,6 +9,7 @@ import time
 from .camera_pipeline import CameraPipeline
 from .base_detector import BaseDetector
 from .proctor_logger import ProctorLogger
+from .alert_communicator import AlertCommunicator
 from .face_detector import FaceDetector
 from .face_matcher import FaceMatcher
 from .eye_detector import EyeMovementDetector
@@ -43,6 +44,13 @@ class ProctorPipeline(CameraPipeline):
         
         # Session logger
         self.session_logger = ProctorLogger(session_id=session_id)
+        
+        # Alert communicator for real-time frontend notifications
+        self.alert_comm = AlertCommunicator(
+            session_id=session_id or 'default',
+            write_interval=0.1,  # Write every 100ms max
+            cooldown_duration=1.0  # 1 second cooldown per alert type
+        )
         
         # Proctoring state
         self.proctoring_results = {
@@ -256,7 +264,7 @@ class ProctorPipeline(CameraPipeline):
         
         # STEP 2: Multiple faces alert
         if num_faces > 1:
-            # Multiple faces detected - LOG ALERT
+            # Multiple faces detected - LOG ALERT & UPDATE ALERT STATE
             alert_msg = f"Multiple people detected: {num_faces} faces"
             
             self.session_logger.log_alert(
@@ -271,8 +279,12 @@ class ProctorPipeline(CameraPipeline):
                 "message": alert_msg,
                 "severity": "warning"
             })
+            
+            # Update alert communicator
+            self.alert_comm.set_multiple_faces(True)
+            self.alert_comm.set_no_face(False)  # Clear no face if multiple detected
         elif num_faces == 0:
-            # No face detected - LOG ALERT
+            # No face detected - LOG ALERT & UPDATE ALERT STATE
             alert_msg = "No face detected"
             
             self.session_logger.log_alert(
@@ -283,9 +295,17 @@ class ProctorPipeline(CameraPipeline):
             self.proctoring_results["alerts"].append({
                 "timestamp": time.time(),
                 "type": "no_face",
-                "message": alert_msg,
+              Clear face count alerts (single face is good)
+            self.alert_comm.set_no_face(False)
+            self.alert_comm.set_multiple_faces(False)
+            
+            #   "message": alert_msg,
                 "severity": "warning"
             })
+            
+            # Update alert communicator
+            self.alert_comm.set_no_face(True)
+            self.alert_comm.set_multiple_faces(False)  # Clear multiple if none detected
         elif num_faces == 1:
             # STEP 3: If single face then verify
             if self.face_matcher and self.face_matcher.enabled:
@@ -293,10 +313,7 @@ class ProctorPipeline(CameraPipeline):
                     verification_result = self._verify_face_sequential(frame, face_meshes[0])
                 except Exception as e:
                     self.logger.error(f"Error during face verification: {e}")
-                    self.session_logger.log_alert('verification_error', f"Verification failed: {e}", 'critical')
-                    verification_result = {'matched': False, 'error': str(e)}
-            
-            # STEP 4: After verify check eye movement
+            eye_risk_detected = False
             if self.eye_detector and self.eye_detector.enabled:
                 try:
                     # Use detect method to get eye data
@@ -310,6 +327,7 @@ class ProctorPipeline(CameraPipeline):
                             
                             # Check for risk alerts
                             if "RISK" in status:
+                                eye_risk_detected = True
                                 alert_msg = f"Suspicious eye movement detected: {detection.get('eye_name', 'Unknown')} eye - {status}"
                                 self.proctoring_results["alerts"].append({
                                     "timestamp": time.time(),
@@ -319,6 +337,16 @@ class ProctorPipeline(CameraPipeline):
                                 })
                         
                         # Store detections for drawing
+                        eye_result = eye_detections
+                    
+                    # Update alert communicator
+                    self.alert_comm.set_eye_movement(eye_risk_detected)
+                except Exception as e:
+                    self.logger.error(f"Error during eye detection: {e}")
+                    self.session_logger.log_alert('eye_detection_error', f"Eye detection failed: {e}", 'info')
+            else:
+                # Clear eye movement alert if detector disabled
+                self.alert_comm.set_eye_movement(False
                         eye_result = eye_detections
                 except Exception as e:
                     self.logger.error(f"Error during eye detection: {e}")
@@ -335,9 +363,18 @@ class ProctorPipeline(CameraPipeline):
                 if phone_result.get('alert', False):
                     phone_detected = True
                     
-                    self.session_logger.log_alert(
-                        'cheating_phone_detected',
-                        "Phone detected",
+                
+                # Update alert communicator (critical alert, force=True)
+                self.alert_comm.set_phone_detected(phone_detected)
+            except Exception as e:
+                self.logger.error(f"Error during phone detection: {e}")
+                self.session_logger.log_alert('phone_detection_error', f"Phone detection failed: {e}", 'info')
+        else:
+            # Clear phone alert if detector disabled
+            self.alert_comm.set_phone_detected(False)
+        
+        # Flush alert state to file if needed (debounced)
+        self.alert_comm.flush_if_needed(
                         'critical',
                         phone_result  # Metadata stored but not logged
                     )
@@ -398,7 +435,7 @@ class ProctorPipeline(CameraPipeline):
             # Match face
             result = self.face_matcher.match_with_details(face_roi)
             
-            # Log result only to session logger if failed (simplified message)
+            # Log result and update alert communicator if verification failed
             if not result.get('matched'):
                 self.session_logger.log_alert(
                     'face_mismatch',
@@ -406,6 +443,12 @@ class ProctorPipeline(CameraPipeline):
                     'warning',
                     result  # Metadata stored but not logged
                 )
+                
+                # Update alert communicator
+                self.alert_comm.set_face_mismatch(True)
+            else:
+                # Clear face mismatch alert if face matched
+                self.alert_comm.set_face_mismatch(False)
             
             return result
         except Exception as e:
@@ -793,8 +836,19 @@ class ProctorPipeline(CameraPipeline):
         except Exception as e:
             print(f"[DEBUG] ERROR closing session logger: {e}")
             self.logger.error(f"Error closing session logger: {e}")
-        
-        # Cleanup all registered detectors
+                # Force write final alert state and cleanup
+        try:
+            print("[DEBUG] Step 7.5: Cleaning up alert communicator")
+            if hasattr(self, 'alert_comm') and self.alert_comm:
+                print("[DEBUG] Forcing final alert state write")
+                self.alert_comm.clear_all_alerts()  # Clear all alerts at end
+                self.alert_comm.force_write()  # Force write final state
+                print("[DEBUG] Alert communicator cleaned up")
+                self.logger.info("Alert communicator state saved")
+        except Exception as e:
+            print(f"[DEBUG] ERROR cleaning up alert communicator: {e}")
+            self.logger.error(f"Error cleaning up alert communicator: {e}")
+                # Cleanup all registered detectors
         try:
             print("[DEBUG] Step 8: Checking detectors")
             if hasattr(self, 'detectors') and self.detectors:

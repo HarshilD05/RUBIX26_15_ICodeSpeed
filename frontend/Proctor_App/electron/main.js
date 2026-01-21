@@ -39,10 +39,12 @@ function createWindow() {
   if (isDev) {
     // In development, load from Vite dev server
     mainWindow.loadURL('http://localhost:5173');
+    // Open DevTools in development
     mainWindow.webContents.openDevTools();
   } else {
     // In production, load the built files
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    // DevTools are disabled in production builds
   }
 
   mainWindow.on('closed', () => {
@@ -81,7 +83,8 @@ ipcMain.handle('proctoring:start', async (event, options) => {
       faceMatch: options.faceMatch,
       eyeTracking: options.eyeTracking,
       phoneDetect: options.phoneDetect,
-      watchLogs: true,
+      watchAlerts: true,  // Enable alert state file watching
+      watchLogs: false,   // Disable old log file watching
       onOutput: (data, type) => {
         // Send output to renderer if needed
         if (mainWindow && !mainWindow.isDestroyed()) {
