@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { studentTestsAPI } from '../services/api';
 import { useNotification } from '../hooks/useNotification';
 import { useProctoring } from '../hooks/useProctoring';
+// import { useAudioMonitoring } from '../hooks/useAudioMonitoring';
 import {
   Camera,
   CameraOff,
@@ -21,6 +22,7 @@ const TakeTest = () => {
   const isSubmittingRef = useRef(false);
   const { notify } = useNotification();
   const { startMonitoring, stopMonitoring, isMonitoring } = useProctoring();
+  // const { startAudio } = useAudioMonitoring();
 
   // Test state
   const [testData, setTestData] = useState(null);
@@ -162,7 +164,8 @@ const TakeTest = () => {
   const handleStartTest = async () => {
     try {
       setLoading(true);
-      
+      // await startAudio();
+
       // Camera is handled by backend Python process
       setCameraEnabled(true);
       
