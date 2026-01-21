@@ -1,3 +1,6 @@
+from collections import defaultdict
+import math
+import re
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -6,6 +9,8 @@ from .models import Test, TestSession
 from .serializers import TestSerializer, TestResponseSerializer, SubmitTestSerializer
 from bson import ObjectId
 from datetime import datetime
+import os
+from django.conf import settings
 
 def is_admin(request):
     """Check if user is admin"""
@@ -417,6 +422,142 @@ def submit_test(request, test_id):
                 status=status.HTTP_404_NOT_FOUND
             )
         
+        # -------- READ PROCTORING LOG FILE --------
+        log_text = ""
+
+        try:
+            # Build absolute path to log file - go up one level from BASE_DIR
+            log_file_path = os.path.join(
+                os.path.dirname(settings.BASE_DIR),  # Go up one level from backend
+                'HD_ML_stuff',
+                'logs',
+                'proctoring',
+                'test.log'
+            )
+
+            if os.path.exists(log_file_path):
+                with open(log_file_path, 'r', encoding='utf-8') as file:
+                    log_text = file.read()
+            else:
+                log_text = ""
+        except Exception as e:
+            log_text = ""
+
+        # -------- PARSE PROCTORING LOGS --------
+        parsed_violations = []
+
+        log_lines = log_text.splitlines()
+
+        # log_pattern = re.compile(
+        #     r'(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?\]\s(?P<type>[a-zA-Z_]+):.*?duration:\s(?P<duration>[\d.]+)s'
+        # )
+        log_pattern = re.compile(
+            r'(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s-\s(?:WARNING|CRITICAL)\s-\s(?P<type>[a-zA-Z_]+):.*?ended after\s(?P<duration>[\d.]+)s'
+            )
+
+
+        for line in log_lines:
+            match = log_pattern.search(line)
+            if match:
+                parsed_violations.append({
+                    'timestamp': match.group('timestamp'),
+                    'type': match.group('type'),
+                    'duration': float(match.group('duration'))
+                })
+
+        # -------- ADD FRONTEND VIOLATIONS (like tab switches) --------
+        # Frontend violations come from the serializer
+        frontend_violations = validated_data.get('violations', [])
+        
+        # Add tab switches and other frontend violations to parsed_violations
+        for v in frontend_violations:
+            if v.get('type') == 'tab-switch':
+                parsed_violations.append({
+                    'timestamp': v.get('timestamp'),
+                    'type': 'tab_switch',  # Use underscore for consistency
+                    'duration': 0  # Tab switches don't have duration
+                })
+
+        # -------- RISK SCORE CALCULATION --------
+
+        # Base severity
+        BASE_SEVERITY = {
+            'no_face': 10,
+            'multiple_faces': 15,
+            'face_mismatch': 25,
+            'tab_switch': 30,
+            'eye_movement': 5,
+            'cheating_phone_detected': 3
+        }
+
+        # Minimum duration threshold (seconds)
+        MIN_THRESHOLD = {
+            'no_face': 5,
+            'eye_movement': 3,
+            'cheating_phone_detected': 2,
+            'tab_switch': 0,
+            'multiple_faces': 5,
+            'face_mismatch': 5
+        }
+
+        # Duration scale window (seconds)
+        SCALE_WINDOW = {
+            'no_face': 10,
+            'eye_movement': 7,
+            'cheating_phone_detected': 5,
+            'tab_switch': 1,
+            'multiple_faces': 5,
+            'face_mismatch': 5
+        }
+
+        riskScore = 0.0
+        violationCount = defaultdict(int)
+
+        for violation in parsed_violations:
+            v_type = violation['type']
+            duration = violation['duration']
+
+            if v_type not in BASE_SEVERITY:
+                continue
+
+            # Step 1: Threshold filter
+            min_threshold = MIN_THRESHOLD.get(v_type, 0)
+            if duration < min_threshold:
+                continue
+
+            # Step 2: Duration factor
+            if v_type == 'tab_switch':
+                duration_factor = 1
+            else:
+                effective_duration = duration - min_threshold
+                scale_window = SCALE_WINDOW.get(v_type, 1)
+                duration_factor = min(effective_duration / scale_window, 1)
+            
+            # effective_duration = duration - min_threshold
+            # scale_window = SCALE_WINDOW.get(v_type, 1)
+            # duration_factor = min(effective_duration / scale_window, 1)
+
+            # Step 3: Frequency factor
+            violationCount[v_type] += 1
+            frequency_factor = math.log(1 + violationCount[v_type])
+
+            # Step 4: Risk contribution
+            risk_delta = (
+                BASE_SEVERITY[v_type] *
+                duration_factor *
+                frequency_factor
+            )
+
+            # Step 5: Update state
+            # riskScore = min(100, riskScore + risk_delta)
+            riskScore = round(min(100, riskScore + risk_delta), 2)
+            print(f"Violation: {v_type}, Duration: {duration}s, Risk Delta: {risk_delta:.2f}, Cumulative Risk: {riskScore:.2f}, Count: {violationCount[v_type]}, Duration Factor: {duration_factor:.2f}, Frequency Factor: {frequency_factor:.2f}")
+
+        # # Optional decay (single-pass approximation)
+        # riskScore = round(min(100, riskScore * 0.97), 2)
+
+
+        
         # Calculate score
         score_data = Test.calculate_score(test_doc, answers)
         
@@ -424,13 +565,14 @@ def submit_test(request, test_id):
         submission_time = datetime.utcnow()
         update_data = {
             'answers': answers,
-            'violations': violations,
-            'risk_score': risk_score,
+            'violations': parsed_violations,
+            'risk_score': riskScore,
             'score': score_data['score'],
             'status': 'completed',
             'submitted_at': submission_time,
             'end_time': submission_time,
-            'score_details': score_data
+            'score_details': score_data,
+            'proctoring_log': log_text
         }
         
         TestSession.update(str(session_doc['_id']), update_data)
@@ -448,8 +590,8 @@ def submit_test(request, test_id):
                     'unanswered': score_data['unanswered'],
                     'total_questions': score_data['total_questions'],
                     'submitted_at': submission_time.isoformat(),
-                    'risk_score': risk_score,
-                    'violations_count': len(violations)
+                    'risk_score': riskScore,
+                    'violations_count': len(parsed_violations)
                 }
             },
             status=status.HTTP_200_OK

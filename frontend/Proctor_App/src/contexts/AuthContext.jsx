@@ -89,10 +89,11 @@ export const AuthProvider = ({ children }) => {
   // };
 
   const login = async (email, password) => {
+    console.log('Attempting login with email:', email);
   try {
     const response = await authAPI.login(email, password);
     const { user, token } = response.data; // Ensure this matches Django's response structure
-    
+    console.log('Login response data:', response.data);
     const userData = { ...user, token };
     setUser(userData);
     localStorage.setItem('user', JSON.stringify(userData));
