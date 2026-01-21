@@ -10,6 +10,9 @@ const processManager = require('./processManager');
 const logWatcher = require('./logWatcher');
 const alertStateWatcher = require('./alertStateWatcher');
 
+// Load environment variables
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
+
 class CameraMonitorSpawner {
   constructor() {
     this.monitorProcessId = null;
@@ -18,6 +21,13 @@ class CameraMonitorSpawner {
     this.pythonPath = null;
     this.scriptPath = null;
     this.participantImagePath = null;
+    
+    // Environment config
+    this.projectPath = process.env.PYTHON_PROJECT_PATH || 'Mustan_ML_stuff';
+    this.scriptName = process.env.PYTHON_SCRIPT_NAME || 'proctor_main_background.py';
+    this.participantImageRelPath = process.env.PARTICIPANT_IMAGE_PATH || 'data/participant.png';
+    this.logDirPath = process.env.LOG_DIRECTORY_PATH || 'logs/proctoring';
+    this.alertStateFilename = process.env.ALERT_STATE_FILENAME || 'alert_state.txt';
   }
 
   /**
@@ -35,16 +45,15 @@ class CameraMonitorSpawner {
     
     this.scriptPath = config.scriptPath || path.join(
       appRoot,
-      'Mustan_ML_stuff',
-      'proctor_main_background.py'
+      this.projectPath,
+      this.scriptName
     );
 
     // Participant data path
     this.participantImagePath = config.participantImagePath || path.join(
       appRoot,
-      'Mustan_ML_stuff',
-      'data',
-      'participant.png'
+      this.projectPath,
+      this.participantImageRelPath
     );
 
     console.log('[CameraMonitor] Initialized with:');
@@ -70,20 +79,20 @@ class CameraMonitorSpawner {
     const venvBinDir = platform === 'win32' ? 'Scripts' : 'bin';
 
     // Priority order for finding Python:
-    // 1. Virtual environment in HD_ML_stuff/.venv
-    // 2. Virtual environment in HD_ML_stuff/venv
+    // 1. Virtual environment in project/.venv
+    // 2. Virtual environment in project/venv
     // 3. Conda environment (if CONDA_PREFIX is set)
     // 4. System Python
 
     // Check for .venv (common convention)
-    const venvPath1 = path.join(appRoot, 'HD_ML_stuff', '.venv', venvBinDir, pythonExeName);
+    const venvPath1 = path.join(appRoot, this.projectPath, '.venv', venvBinDir, pythonExeName);
     if (fs.existsSync(venvPath1)) {
       console.log(`[CameraMonitor] Found venv Python: ${venvPath1}`);
       return venvPath1;
     }
 
     // Check for venv (without dot)
-    const venvPath2 = path.join(appRoot, 'HD_ML_stuff', 'venv', venvBinDir, pythonExeName);
+    const venvPath2 = path.join(appRoot, this.projectPath, 'venv', venvBinDir, pythonExeName);
     if (fs.existsSync(venvPath2)) {
       console.log(`[CameraMonitor] Found venv Python: ${venvPath2}`);
       return venvPath2;
@@ -99,7 +108,7 @@ class CameraMonitorSpawner {
     }
 
     // Check for env folder (another common name)
-    const envPath = path.join(appRoot, 'HD_ML_stuff', 'env', venvBinDir, pythonExeName);
+    const envPath = path.join(appRoot, this.projectPath, 'env', venvBinDir, pythonExeName);
     if (fs.existsSync(envPath)) {
       console.log(`[CameraMonitor] Found env Python: ${envPath}`);
       return envPath;
@@ -223,8 +232,9 @@ class CameraMonitorSpawner {
       if (logDir && options.watchAlerts !== false) {
         // Give the process a moment to create the alert state file
         setTimeout(() => {
-          const alertStateFile = path.join(logDir, 'alert_state.txt');
-          alertStateWatcher.startWatching(alertStateFile, { pollInterval: 200 });
+          const alertStateFile = path.join(logDir, this.alertStateFilename);
+          const pollInterval = parseInt(process.env.ALERT_POLL_INTERVAL || '200');
+          alertStateWatcher.startWatching(alertStateFile, { pollInterval });
           
           // Forward alert events to the callback if provided
           if (options.onLogAlert) {
@@ -387,7 +397,7 @@ class CameraMonitorSpawner {
     const appRoot = app.isPackaged 
       ? path.dirname(app.getPath('exe'))
       : path.join(__dirname, '../../../..');
-
+this.projectPath, this.logDirPath
     return path.join(appRoot, 'HD_ML_stuff', 'logs', 'proctoring', this.sessionId);
   }
 }
