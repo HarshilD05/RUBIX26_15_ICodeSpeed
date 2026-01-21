@@ -22,20 +22,21 @@ class AlertCommunicator:
     ALERT_FACE_MISMATCH = 3
     ALERT_EYE_MOVEMENT = 4
     
-    def __init__(self, session_id, write_interval=0.1, cooldown_duration=1.0):
+    def __init__(self, log_dir='logs/proctoring', alert_file_name='alert_state.txt', 
+                 write_interval=0.1, cooldown_duration=1.0):
         """
         Initialize alert communicator
         
         Args:
-            session_id: Session identifier for log directory
+            log_: Base directory for proctoring logs (default: 'logs/proctoring')
+            alert_file_name: Name of alert state file (default: 'alert_state.txt')
             write_interval: Minimum seconds between file writes (default: 0.1)
             cooldown_duration: Seconds before same alert can retrigger (default: 1.0)
         """
-        self.session_id = session_id
-        self.log_dir = os.path.join('logs', 'proctoring', session_id)
-        os.makedirs(self.log_dir, exist_ok=True)
         
-        self.alert_file = os.path.join(self.log_dir, 'alert_state.txt')
+        self.log_dir = log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.alert_file = os.path.join(self.log_dir, alert_file_name)
         
         # Alert state: [phone, no_face, multi_face, face_mismatch, eye_movement]
         self.alert_state = [0, 0, 0, 0, 0]
@@ -54,7 +55,6 @@ class AlertCommunicator:
         
         # Initialize file with all zeros
         self._write_state()
-        self.logger.info(f"Alert communicator initialized for session {session_id}")
         self.logger.info(f"Alert state file: {self.alert_file}")
     
     def set_alert(self, index, value, force=False):

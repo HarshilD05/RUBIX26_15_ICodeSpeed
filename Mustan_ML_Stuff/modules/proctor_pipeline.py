@@ -43,11 +43,15 @@ class ProctorPipeline(CameraPipeline):
         self.frame_counter = 0
         
         # Session logger
-        self.session_logger = ProctorLogger(session_id=session_id)
+        self.session_logger = ProctorLogger(
+            log_dir=config.PROCTORING_LOG_DIR,
+            session_id=session_id
+        )
         
         # Alert communicator for real-time frontend notifications
         self.alert_comm = AlertCommunicator(
-            session_id=session_id or 'default',
+            log_dir=config.PROCTORING_LOG_DIR,
+            alert_file_name=config.ALERT_STATE_FILE_NAME,
             write_interval=0.1,  # Write every 100ms max
             cooldown_duration=1.0  # 1 second cooldown per alert type
         )
@@ -295,11 +299,7 @@ class ProctorPipeline(CameraPipeline):
             self.proctoring_results["alerts"].append({
                 "timestamp": time.time(),
                 "type": "no_face",
-              Clear face count alerts (single face is good)
-            self.alert_comm.set_no_face(False)
-            self.alert_comm.set_multiple_faces(False)
-            
-            #   "message": alert_msg,
+                "message": alert_msg,
                 "severity": "warning"
             })
             
@@ -307,12 +307,18 @@ class ProctorPipeline(CameraPipeline):
             self.alert_comm.set_no_face(True)
             self.alert_comm.set_multiple_faces(False)  # Clear multiple if none detected
         elif num_faces == 1:
+            # Clear face count alerts (single face is good)
+            self.alert_comm.set_no_face(False)
+            self.alert_comm.set_multiple_faces(False)
+            
             # STEP 3: If single face then verify
             if self.face_matcher and self.face_matcher.enabled:
                 try:
                     verification_result = self._verify_face_sequential(frame, face_meshes[0])
                 except Exception as e:
                     self.logger.error(f"Error during face verification: {e}")
+            
+            # STEP 4: After verify check eye movement
             eye_risk_detected = False
             if self.eye_detector and self.eye_detector.enabled:
                 try:
@@ -346,12 +352,8 @@ class ProctorPipeline(CameraPipeline):
                     self.session_logger.log_alert('eye_detection_error', f"Eye detection failed: {e}", 'info')
             else:
                 # Clear eye movement alert if detector disabled
-                self.alert_comm.set_eye_movement(False
-                        eye_result = eye_detections
-                except Exception as e:
-                    self.logger.error(f"Error during eye detection: {e}")
-                    self.session_logger.log_alert('eye_detection_error', f"Eye detection failed: {e}", 'info')
-            
+                self.alert_comm.set_eye_movement(False)
+        
         # STEP 5: Check for phone detection
         phone_detected = False
         if self.phone_detector and self.phone_detector.enabled:
@@ -363,6 +365,19 @@ class ProctorPipeline(CameraPipeline):
                 if phone_result.get('alert', False):
                     phone_detected = True
                     
+                    # Log critical alert
+                    self.session_logger.log_alert(
+                        'cheating_phone_detected',
+                        'Phone detected',
+                        'critical',
+                        phone_result  # Metadata stored but not logged
+                    )
+                    self.proctoring_results["alerts"].append({
+                        "timestamp": time.time(),
+                        "type": "cheating_phone_detected",
+                        "message": "Phone detected",
+                        "severity": "critical"
+                    })
                 
                 # Update alert communicator (critical alert, force=True)
                 self.alert_comm.set_phone_detected(phone_detected)
@@ -374,19 +389,7 @@ class ProctorPipeline(CameraPipeline):
             self.alert_comm.set_phone_detected(False)
         
         # Flush alert state to file if needed (debounced)
-        self.alert_comm.flush_if_needed(
-                        'critical',
-                        phone_result  # Metadata stored but not logged
-                    )
-                    self.proctoring_results["alerts"].append({
-                        "timestamp": time.time(),
-                        "type": "cheating_phone_detected",
-                        "message": "Phone detected",
-                        "severity": "critical"
-                    })
-            except Exception as e:
-                self.logger.error(f"Error during phone detection: {e}")
-                self.session_logger.log_alert('phone_detection_error', f"Phone detection failed: {e}", 'info')
+        self.alert_comm.flush_if_needed()
     
         # Only draw annotations if DISPLAY_FEED is enabled
         if getattr(self.config, 'DISPLAY_FEED', True):
