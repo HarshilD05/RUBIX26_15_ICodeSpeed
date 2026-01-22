@@ -1,3 +1,6 @@
+from collections import defaultdict
+import math
+import re
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -6,6 +9,8 @@ from .models import Test, TestSession
 from .serializers import TestSerializer, TestResponseSerializer, SubmitTestSerializer
 from bson import ObjectId
 from datetime import datetime
+import os
+from django.conf import settings
 
 def is_admin(request):
     """Check if user is admin"""
@@ -169,6 +174,40 @@ def test_detail(request, test_id):
                 status=status.HTTP_403_FORBIDDEN
             )
         
+        # if request.method == 'PUT':
+        #     # Partial update - only update provided fields
+        #     update_data = {}
+            
+        #     if 'title' in request.data:
+        #         update_data['title'] = request.data['title']
+        #     if 'description' in request.data:
+        #         update_data['description'] = request.data['description']
+        #     if 'duration' in request.data:
+        #         update_data['duration'] = request.data['duration']
+        #     if 'total_marks' in request.data:
+        #         update_data['total_marks'] = request.data['total_marks']
+        #     if 'questions' in request.data:
+        #         update_data['questions'] = request.data['questions']
+        #         update_data['total_questions'] = len(request.data['questions'])
+        #     if 'start_date' in request.data:
+        #         update_data['start_date'] = request.data['start_date']
+        #     if 'end_date' in request.data:
+        #         update_data['end_date'] = request.data['end_date']
+            
+        #     if not update_data:
+        #         return Response(
+        #             {'error': 'No fields to update'},
+        #             status=status.HTTP_400_BAD_REQUEST
+        #         )
+            
+        #     Test.update(test_id, update_data)
+        #     updated_test = Test.find_by_id(test_id)
+            
+        #     return Response(
+        #         Test.to_dict(updated_test),
+        #         status=status.HTTP_200_OK
+        #     )
+
         if request.method == 'PUT':
             # Partial update - only update provided fields
             update_data = {}
@@ -184,10 +223,41 @@ def test_detail(request, test_id):
             if 'questions' in request.data:
                 update_data['questions'] = request.data['questions']
                 update_data['total_questions'] = len(request.data['questions'])
+            
+            # ✅ FIXED: Parse date strings to datetime objects
             if 'start_date' in request.data:
-                update_data['start_date'] = request.data['start_date']
+                start_date = request.data['start_date']
+                if start_date:
+                    try:
+                        # Convert ISO string to datetime object
+                        if isinstance(start_date, str):
+                            update_data['start_date'] = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                        else:
+                            update_data['start_date'] = start_date
+                    except ValueError:
+                        return Response(
+                            {'error': 'Invalid start_date format'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                else:
+                    update_data['start_date'] = None
+            
             if 'end_date' in request.data:
-                update_data['end_date'] = request.data['end_date']
+                end_date = request.data['end_date']
+                if end_date:
+                    try:
+                        # Convert ISO string to datetime object
+                        if isinstance(end_date, str):
+                            update_data['end_date'] = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                        else:
+                            update_data['end_date'] = end_date
+                    except ValueError:
+                        return Response(
+                            {'error': 'Invalid end_date format'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                else:
+                    update_data['end_date'] = None
             
             if not update_data:
                 return Response(
@@ -202,6 +272,7 @@ def test_detail(request, test_id):
                 Test.to_dict(updated_test),
                 status=status.HTTP_200_OK
             )
+
         
         elif request.method == 'DELETE':
             Test.delete(test_id)
@@ -319,7 +390,9 @@ def start_test(request, test_id):
         
         # STEP 3: Check if student already has an active session
         # This prevents students from starting the same test multiple times
-        student_id = request.user.id  # Get student ID from JWT token
+        # student_id = request.user.id  # Get student ID from JWT token
+        # existing_session = TestSession.find_active_session(test_id, student_id)
+        student_id = str(request.user.id)
         existing_session = TestSession.find_active_session(test_id, student_id)
         
         if existing_session:
@@ -327,6 +400,17 @@ def start_test(request, test_id):
                 {
                     'error': 'You already have an active session for this test',
                     'session': TestSession.to_dict(existing_session)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        completed_session = TestSession.find_completed_session(test_id, student_id)
+        
+        if completed_session:
+            return Response(
+                {
+                    'error': 'You have already completed this test',
+                    'session': TestSession.to_dict(completed_session)
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -352,6 +436,9 @@ def start_test(request, test_id):
         )
     
     except Exception as e:
+        print(f"Error in start_test: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         # Catch any unexpected errors
         return Response(
             {'error': str(e)},
@@ -396,10 +483,17 @@ def submit_test(request, test_id):
         violations = validated_data.get('violations', [])
         risk_score = validated_data.get('risk_score', 0)
         
-        # Get student ID from JWT
-        student_id = request.user.id
+        # # Get student ID from JWT
+        # student_id = request.user.id
         
-        # Find active test session
+        # # Find active test session
+        # session_doc = TestSession.find_active_session(test_id, student_id)
+
+        
+        # ✅ FIXED: Get student ID as string (for consistency)
+        student_id = str(request.user.id)
+        
+        # ✅ FIXED: Find active session for THIS SPECIFIC student
         session_doc = TestSession.find_active_session(test_id, student_id)
         
         if not session_doc:
@@ -417,6 +511,142 @@ def submit_test(request, test_id):
                 status=status.HTTP_404_NOT_FOUND
             )
         
+        # -------- READ PROCTORING LOG FILE --------
+        log_text = ""
+
+        try:
+            # Build absolute path to log file - go up one level from BASE_DIR
+            log_file_path = os.path.join(
+                os.path.dirname(settings.BASE_DIR),  # Go up one level from backend
+                'Mustan_ML_Stuff',
+                'logs',
+                'proctoring',
+                'test.log'
+            )
+
+            if os.path.exists(log_file_path):
+                with open(log_file_path, 'r', encoding='utf-8') as file:
+                    log_text = file.read()
+            else:
+                log_text = ""
+        except Exception as e:
+            log_text = ""
+
+        # -------- PARSE PROCTORING LOGS --------
+        parsed_violations = []
+
+        log_lines = log_text.splitlines()
+
+        # log_pattern = re.compile(
+        #     r'(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?\]\s(?P<type>[a-zA-Z_]+):.*?duration:\s(?P<duration>[\d.]+)s'
+        # )
+        log_pattern = re.compile(
+            r'(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s-\s(?:WARNING|CRITICAL)\s-\s(?P<type>[a-zA-Z_]+):.*?ended after\s(?P<duration>[\d.]+)s'
+            )
+
+
+        for line in log_lines:
+            match = log_pattern.search(line)
+            if match:
+                parsed_violations.append({
+                    'timestamp': match.group('timestamp'),
+                    'type': match.group('type'),
+                    'duration': float(match.group('duration'))
+                })
+
+        # -------- ADD FRONTEND VIOLATIONS (like tab switches) --------
+        # Frontend violations come from the serializer
+        frontend_violations = validated_data.get('violations', [])
+        
+        # Add tab switches and other frontend violations to parsed_violations
+        for v in frontend_violations:
+            if v.get('type') == 'tab-switch':
+                parsed_violations.append({
+                    'timestamp': v.get('timestamp'),
+                    'type': 'tab_switch',  # Use underscore for consistency
+                    'duration': 0  # Tab switches don't have duration
+                })
+
+        # -------- RISK SCORE CALCULATION --------
+
+        # Base severity
+        BASE_SEVERITY = {
+            'no_face': 10,
+            'multiple_faces': 15,
+            'face_mismatch': 25,
+            'tab_switch': 30,
+            'eye_movement': 5,
+            'cheating_phone_detected': 3
+        }
+
+        # Minimum duration threshold (seconds)
+        MIN_THRESHOLD = {
+            'no_face': 5,
+            'eye_movement': 3,
+            'cheating_phone_detected': 2,
+            'tab_switch': 0,
+            'multiple_faces': 5,
+            'face_mismatch': 5
+        }
+
+        # Duration scale window (seconds)
+        SCALE_WINDOW = {
+            'no_face': 10,
+            'eye_movement': 7,
+            'cheating_phone_detected': 5,
+            'tab_switch': 1,
+            'multiple_faces': 5,
+            'face_mismatch': 5
+        }
+
+        riskScore = 0.0
+        violationCount = defaultdict(int)
+
+        for violation in parsed_violations:
+            v_type = violation['type']
+            duration = violation['duration']
+
+            if v_type not in BASE_SEVERITY:
+                continue
+
+            # Step 1: Threshold filter
+            min_threshold = MIN_THRESHOLD.get(v_type, 0)
+            if duration < min_threshold:
+                continue
+
+            # Step 2: Duration factor
+            if v_type == 'tab_switch':
+                duration_factor = 1
+            else:
+                effective_duration = duration - min_threshold
+                scale_window = SCALE_WINDOW.get(v_type, 1)
+                duration_factor = min(effective_duration / scale_window, 1)
+            
+            # effective_duration = duration - min_threshold
+            # scale_window = SCALE_WINDOW.get(v_type, 1)
+            # duration_factor = min(effective_duration / scale_window, 1)
+
+            # Step 3: Frequency factor
+            violationCount[v_type] += 1
+            frequency_factor = math.log(1 + violationCount[v_type])
+
+            # Step 4: Risk contribution
+            risk_delta = (
+                BASE_SEVERITY[v_type] *
+                duration_factor *
+                frequency_factor
+            )
+
+            # Step 5: Update state
+            # riskScore = min(100, riskScore + risk_delta)
+            riskScore = round(min(100, riskScore + risk_delta), 2)
+            print(f"Violation: {v_type}, Duration: {duration}s, Risk Delta: {risk_delta:.2f}, Cumulative Risk: {riskScore:.2f}, Count: {violationCount[v_type]}, Duration Factor: {duration_factor:.2f}, Frequency Factor: {frequency_factor:.2f}")
+
+        # # Optional decay (single-pass approximation)
+        # riskScore = round(min(100, riskScore * 0.97), 2)
+
+
+        
         # Calculate score
         score_data = Test.calculate_score(test_doc, answers)
         
@@ -424,13 +654,14 @@ def submit_test(request, test_id):
         submission_time = datetime.utcnow()
         update_data = {
             'answers': answers,
-            'violations': violations,
-            'risk_score': risk_score,
+            'violations': parsed_violations,
+            'risk_score': riskScore,
             'score': score_data['score'],
             'status': 'completed',
             'submitted_at': submission_time,
             'end_time': submission_time,
-            'score_details': score_data
+            'score_details': score_data,
+            'proctoring_log': log_text
         }
         
         TestSession.update(str(session_doc['_id']), update_data)
@@ -448,8 +679,8 @@ def submit_test(request, test_id):
                     'unanswered': score_data['unanswered'],
                     'total_questions': score_data['total_questions'],
                     'submitted_at': submission_time.isoformat(),
-                    'risk_score': risk_score,
-                    'violations_count': len(violations)
+                    'risk_score': riskScore,
+                    'violations_count': len(parsed_violations)
                 }
             },
             status=status.HTTP_200_OK
@@ -518,8 +749,12 @@ def get_student_results(request, student_id):
     
     try:
         # Get all completed sessions for this student
+        # sessions = list(TestSession.collection.find({
+        #     'student_id': student_id,
+        #     'status': 'completed'
+        # }))
         sessions = list(TestSession.collection.find({
-            'student_id': student_id,
+            'student_id': student_id,  # ✅ Filter by student_id
             'status': 'completed'
         }))
         
@@ -545,6 +780,9 @@ def get_student_results(request, student_id):
         return Response(results, status=status.HTTP_200_OK)
     
     except Exception as e:
+        print(f"Error in get_student_results: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         return Response(
             {'error': str(e)},
             status=status.HTTP_400_BAD_REQUEST
@@ -617,11 +855,14 @@ def get_available_tests(request):
         for test in tests:
             test_id = str(test['_id'])
             
-            # Check if student has a session for this test
-            session = TestSession.collection.find_one({
-                'test_id': test['_id'],
-                'student_id': student_id
-            })
+            # # Check if student has a session for this test
+            # session = TestSession.collection.find_one({
+            #     'test_id': test['_id'],
+            #     'student_id': student_id
+            # })
+
+            # ✅ FIXED: Check if THIS SPECIFIC STUDENT has a session for this test
+            session = TestSession.find_student_session(test_id, student_id)
             
             # Determine status and score
             if session:
