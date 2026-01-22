@@ -42,10 +42,43 @@ class SharedFrameBuffer:
         self.mmap_file = None
         self.file_handle = None
         
+        # Preview control flag file (separate 4-byte mmap)
+        self.flag_path = file_path.replace('.mmap', '_flag.mmap')
+        self.flag_mmap = None
+        self.flag_handle = None
+        
         if create:
             self._create_buffer()
+            self._create_flag_file()
         else:
             self._open_buffer()
+            self._open_flag_file()
+    
+    def _create_flag_file(self):
+        """Create preview control flag file (4 bytes)"""
+        try:
+            # Create 4-byte flag file, initialized to 1 (preview enabled)
+            with open(self.flag_path, 'wb') as f:
+                f.write(struct.pack('I', 1))
+            
+            # Open for reading and writing
+            self.flag_handle = open(self.flag_path, 'r+b')
+            self.flag_mmap = mmap.mmap(self.flag_handle.fileno(), 4)
+            
+            self.logger.info(f"Preview flag file created: {self.flag_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to create preview flag file: {e}")
+            raise
+    
+    def _open_flag_file(self):
+        """Open existing preview control flag file"""
+        try:
+            self.flag_handle = open(self.flag_path, 'r+b')
+            self.flag_mmap = mmap.mmap(self.flag_handle.fileno(), 4)
+            self.logger.info(f"Preview flag file opened: {self.flag_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to open preview flag file, creating new: {e}")
+            self._create_flag_file()
     
     def _create_buffer(self):
         """Create new shared memory buffer"""
@@ -90,12 +123,24 @@ class SharedFrameBuffer:
             self.logger.error(f"Failed to open shared buffer: {e}")
             raise
     
-    def write_frame(self, frame):
+    def is_preview_enabled(self):
+        """Check if preview mode is enabled (read flag from mmap)"""
+        try:
+            if self.flag_mmap:
+                flag_value = struct.unpack('I', self.flag_mmap[0:4])[0]
+                return flag_value == 1
+            return False
+        except Exception as e:
+            self.logger.error(f"Error reading preview flag: {e}")
+            return False
+    
+    def write_frame(self, frame, quality=70):
         """
-        Write frame to shared memory
+        Write frame to shared memory as JPEG
         
         Args:
             frame: OpenCV frame (BGR format)
+            quality: JPEG quality (1-100, default 70)
         
         Returns:
             bool: Success status
@@ -105,11 +150,22 @@ class SharedFrameBuffer:
         
         try:
             height, width, channels = frame.shape
-            frame_size = frame.size
+            
+            # Encode frame as JPEG
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+            success, jpeg_buffer = cv2.imencode('.jpg', frame, encode_param)
+            
+            if not success:
+                self.logger.error("Failed to encode frame as JPEG")
+                return False
+            
+            # Convert to bytes
+            jpeg_bytes = jpeg_buffer.tobytes()
+            frame_size = len(jpeg_bytes)
             
             # Check size limit
             if frame_size > self.MAX_FRAME_SIZE:
-                self.logger.warning(f"Frame too large: {frame_size} > {self.MAX_FRAME_SIZE}")
+                self.logger.warning(f"JPEG frame too large: {frame_size} > {self.MAX_FRAME_SIZE}")
                 return False
             
             # Get timestamp
@@ -130,8 +186,8 @@ class SharedFrameBuffer:
             )
             self.mmap_file.write(header)
             
-            # Write frame data (raw bytes)
-            self.mmap_file.write(frame.tobytes())
+            # Write JPEG data
+            self.mmap_file.write(jpeg_bytes)
             self.mmap_file.flush()
             
             return True
@@ -213,6 +269,10 @@ class SharedFrameBuffer:
                 self.mmap_file.close()
             if self.file_handle:
                 self.file_handle.close()
+            if self.flag_mmap:
+                self.flag_mmap.close()
+            if self.flag_handle:
+                self.flag_handle.close()
             self.logger.info("Closed shared buffer")
         except Exception as e:
             self.logger.error(f"Error closing buffer: {e}")
@@ -224,6 +284,9 @@ class SharedFrameBuffer:
             if os.path.exists(self.file_path):
                 os.remove(self.file_path)
                 self.logger.info(f"Deleted buffer file: {self.file_path}")
+            if os.path.exists(self.flag_path):
+                os.remove(self.flag_path)
+                self.logger.info(f"Deleted flag file: {self.flag_path}")
         except Exception as e:
             self.logger.error(f"Error deleting buffer file: {e}")
     

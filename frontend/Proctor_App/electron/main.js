@@ -3,6 +3,7 @@ const path = require('path');
 const cameraMonitor = require('./utils/camMonitorSpawn');
 const processTerminator = require('./utils/processTerminator');
 const logWatcher = require('./utils/logWatcher');
+const SharedMemoryFrameReader = require('./utils/sharedMemoryReader');
 
 // Load environment variables
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
@@ -239,6 +240,178 @@ ipcMain.handle('proctoring:getAlertsJSON', async (event, sessionId) => {
     };
   } catch (error) {
     console.error('Proctoring get alerts JSON error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// === Frame Streaming Handlers (Shared Memory) ===
+let frameReader = null;
+let frameStreamInterval = null;
+
+ipcMain.handle('proctoring:startFrameStream', async (event, options = {}) => {
+  try {
+    const fps = options.fps || 30;
+    
+    // Get shared memory path from environment
+    const mmapPath = process.env.FRAME_SHARED_PATH;
+    if (!mmapPath) {
+      return {
+        success: false,
+        error: 'FRAME_SHARED_PATH not configured in .env'
+      };
+    }
+
+    // Resolve absolute path
+    const absolutePath = path.isAbsolute(mmapPath) 
+      ? mmapPath 
+      : path.join(__dirname, '../..', mmapPath);
+
+    console.log(`[FrameStream] Starting stream from: ${absolutePath}`);
+
+    // Create frame reader
+    frameReader = new SharedMemoryFrameReader(absolutePath);
+    if (!frameReader.open()) {
+      return {
+        success: false,
+        error: 'Failed to open shared memory file'
+      };
+    }
+
+    // Start streaming frames at specified FPS
+    const interval = 1000 / fps;
+    frameStreamInterval = setInterval(() => {
+      try {
+        const frame = frameReader.readFrameAsJPEG();
+        if (frame) {
+          // Send frame to renderer
+          mainWindow?.webContents.send('proctoring:frame', {
+            width: frame.width,
+            height: frame.height,
+            timestamp: frame.timestamp,
+            data: frame.data,
+            format: frame.format
+          });
+        }
+      } catch (error) {
+        console.error('[FrameStream] Error reading frame:', error);
+      }
+    }, interval);
+
+    console.log(`[FrameStream] Started (${fps} fps)`);
+    return {
+      success: true,
+      fps
+    };
+
+  } catch (error) {
+    console.error('[FrameStream] Start error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+ipcMain.handle('proctoring:stopFrameStream', async () => {
+  try {
+    // Stop interval
+    if (frameStreamInterval) {
+      clearInterval(frameStreamInterval);
+      frameStreamInterval = null;
+    }
+
+    // Close frame reader
+    if (frameReader) {
+      frameReader.close();
+      frameReader = null;
+    }
+
+    console.log('[FrameStream] Stopped');
+    return { success: true };
+
+  } catch (error) {
+    console.error('[FrameStream] Stop error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// Enable preview mode (Python writes frames)
+ipcMain.handle('proctoring:enablePreview', async () => {
+  try {
+    if (!frameReader) {
+      return {
+        success: false,
+        error: 'Frame reader not initialized'
+      };
+    }
+
+    const success = frameReader.enablePreview();
+    return { 
+      success,
+      error: success ? null : 'Failed to enable preview'
+    };
+  } catch (error) {
+    console.error('[Preview] Enable error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// Disable preview mode (Python skips writing frames)
+ipcMain.handle('proctoring:disablePreview', async () => {
+  try {
+    if (!frameReader) {
+      return {
+        success: false,
+        error: 'Frame reader not initialized'
+      };
+    }
+
+    const success = frameReader.disablePreview();
+    return { 
+      success,
+      error: success ? null : 'Failed to disable preview'
+    };
+  } catch (error) {
+    console.error('[Preview] Disable error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+ipcMain.handle('proctoring:getFrameInfo', async () => {
+  try {
+    if (!frameReader || !frameReader.isOpen) {
+      return {
+        success: false,
+        error: 'Frame stream not active'
+      };
+    }
+
+    const info = frameReader.readFrameInfo();
+    if (!info) {
+      return {
+        success: false,
+        error: 'No frame available yet'
+      };
+    }
+
+    return {
+      success: true,
+      ...info
+    };
+
+  } catch (error) {
     return {
       success: false,
       error: error.message

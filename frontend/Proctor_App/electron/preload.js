@@ -20,7 +20,8 @@ contextBridge.exposeInMainWorld('electron', {
       'proctoring:output',
       'proctoring:stopped',
       'proctoring:alert',
-      'proctoring:notification'
+      'proctoring:notification',
+      'proctoring:frame'
     ];
     if (validChannels.includes(channel)) {
       // Strip event as it includes `sender`
@@ -39,7 +40,13 @@ contextBridge.exposeInMainWorld('electron', {
       'proctoring:status',
       'proctoring:getLogs',
       'proctoring:setParticipantImage',
-      'proctoring:getAlertsJSON'
+      'proctoring:getAlertsJSON',
+      // Frame streaming channels
+      'proctoring:startFrameStream',
+      'proctoring:stopFrameStream',
+      'proctoring:getFrameInfo',
+      'proctoring:enablePreview',
+      'proctoring:disablePreview'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);

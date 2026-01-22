@@ -147,7 +147,8 @@ class ProctorPipeline(CameraPipeline):
                 self.logger.info("Loading Eye Movement Detector (MediaPipe-based)...")
                 self.eye_detector = EyeMovementDetector(
                     name="EyeMovementDetector",
-                    enabled=True
+                    enabled=True,
+                    config=self.config  # Pass config to eye detector
                 )
                 
                 if self.eye_detector.load_model():
@@ -279,6 +280,14 @@ class ProctorPipeline(CameraPipeline):
         self.session_logger.log_frame_processed()
         
         annotated_frame = frame.copy()
+        
+        # Write ORIGINAL frame to shared memory buffer (BEFORE annotations)
+        # Only write if preview mode is enabled (checked via flag mmap)
+        if self.frame_buffer and self.frame_buffer.is_preview_enabled():
+            try:
+                self.frame_buffer.write_frame(frame, quality=70)
+            except Exception as e:
+                self.logger.error(f"Error writing frame to shared buffer: {e}")
         
         # STEP 1: MediaPipe face detector gets faces
         face_meshes = []
@@ -417,37 +426,29 @@ class ProctorPipeline(CameraPipeline):
         
         # Flush alert state to file if needed (debounced)
         self.alert_comm.flush_if_needed()
-        
-        # Write frame to shared memory buffer if enabled
-        if self.frame_buffer:
-            try:
-                self.frame_buffer.write_frame(annotated_frame)
-            except Exception as e:
-                self.logger.error(f"Error writing frame to shared buffer: {e}")
     
-        # Only draw annotations if DISPLAY_FEED is enabled
-        if getattr(self.config, 'DISPLAY_FEED', True):
-            # Draw face meshes on frame with configuration
-            if face_meshes and self.face_detector:
-                show_all = getattr(self.config, 'SHOW_ALL_FACE_LANDMARKS', False)
-                show_nums = getattr(self.config, 'SHOW_LANDMARK_NUMBERS', False)
-                annotated_frame = self.face_detector.draw_faces(
-                    annotated_frame, 
-                    face_meshes,
-                    show_all_landmarks=show_all,
-                    show_landmark_numbers=show_nums
-                )
-            
-            # Draw eye detection results if available
-            if eye_result and self.eye_detector:
-                try:
-                    # Use process_frame to get annotated output
-                    annotated_frame, _ = self.eye_detector.process_frame(annotated_frame, face_meshes, draw=True)
-                except Exception as e:
-                    self.logger.error(f"Error drawing eye keypoints: {e}")
-            
-            # Add unified status overlay (FPS, face status, phone status)
-            annotated_frame = self._add_status_overlay(annotated_frame, num_faces, verification_result, phone_detected)
+        # Draw annotations regardless of DISPLAY_FEED (needed for shared memory preview)
+        # Draw face meshes on frame with configuration
+        if face_meshes and self.face_detector:
+            show_all = getattr(self.config, 'SHOW_ALL_FACE_LANDMARKS', False)
+            show_nums = getattr(self.config, 'SHOW_LANDMARK_NUMBERS', False)
+            annotated_frame = self.face_detector.draw_faces(
+                annotated_frame, 
+                face_meshes,
+                show_all_landmarks=show_all,
+                show_landmark_numbers=show_nums
+            )
+        
+        # Draw eye detection results if available
+        if eye_result and self.eye_detector:
+            try:
+                # Use process_frame to get annotated output
+                annotated_frame, _ = self.eye_detector.process_frame(annotated_frame, face_meshes, draw=True)
+            except Exception as e:
+                self.logger.error(f"Error drawing eye keypoints: {e}")
+        
+        # Add unified status overlay (FPS, face status, phone status)
+        annotated_frame = self._add_status_overlay(annotated_frame, num_faces, verification_result, phone_detected)
         
         return annotated_frame
     
